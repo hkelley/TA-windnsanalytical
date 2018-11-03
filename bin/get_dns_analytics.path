@@ -1,0 +1,1 @@
+C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -command "& '$SPLUNK_HOME\etc\apps\TA-WindowsDNSAnalytical\bin\get_dns_analytics.ps1'"
