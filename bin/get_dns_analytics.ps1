@@ -113,7 +113,7 @@ while(($record = $reader.ReadEvent()) -ne $null) # Do not use Get-WinEvent to av
 
     $record | Add-Member -MemberType NoteProperty -Name Message -Value ($messageTypes[$record.Id].Template -f $propVals)
 
-    $events.Add($record)
+    $events.Add($record) | Out-Null
 }
 
 $LoggedTimespanSecs = (New-TimeSpan -Start $logStart -End $logEnd).TotalSeconds
