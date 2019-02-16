@@ -25,7 +25,7 @@ if($bounce)
         Get-Service -Name "SplunkForwarder" -ErrorAction SilentlyContinue | Stop-Service
 		
 		# Clean up any stranded scripted input processes
-		Get-WmiObject Win32_Process -Filter "name = 'powershell.exe'" | ?{$_.CommandLine -like "*\etc\apps\TA-WinDNSAnalytical\bin\*" } | %{Write-Host ("Terminating {0}" -f $_.ProcessID);  $_.Terminate();}
+		Get-WmiObject Win32_Process -Filter "name = 'powershell.exe' AND CommandLine LIKE '%\etc\apps\%\bin\get_dns_analytics.ps1%'"  | %{Write-Host ("Terminating existing instance {0}" -f $_.ProcessID);  $_.Terminate();}
 		
         Get-Service -Name "SplunkForwarder" -ErrorAction SilentlyContinue | Start-Service
         Get-Service -Name "SplunkForwarder" -ErrorAction SilentlyContinue
