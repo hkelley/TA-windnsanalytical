@@ -1,14 +1,28 @@
 
+param
+(
+      [Parameter(Mandatory = $false)] [switch] $SplunkdLogging
+)
+
+
 $filterXPath = "*[System[EventID!=280] and EventData[Data[@Name='InterfaceIP']!='127.0.0.1']]"
 $logName = 'Microsoft-Windows-DNSServer/Analytical'
+$scriptname = Split-Path $MyInvocation.MyCommand.Path -Leaf
+
 
 $ignoredZonesStatic = @("microsoft.com","microsoft.com.akadns.net","sophosxl.net")
 $ignoredZonesList = New-Object System.Collections.ArrayList
+
+if($SplunkdLogging)
+{  [Console]::Error.WriteLine(("INFO [{0}:{1}] Starting" -f $scriptname,$PID))  }
 
 function BuildRegExPatternFromDomain ([string] $domainBase)
 {
     return "{0}" -f $domainBase.ToLower().Replace(".","\.")
 }
+
+if($SplunkdLogging)
+{  [Console]::Error.WriteLine(("INFO [{0}:{1}] Collecting local zones" -f $scriptname,$PID))  }
 
 # build the whitelist/ignore list for records
 foreach($domain in $ignoredZonesStatic)
@@ -23,6 +37,9 @@ Get-DnsServerZone | %{
 $ignoredZonesRegex = [regex] ("(?i)({0})\.$" -f ($ignoredZonesList -join "|"))
 
 
+if($SplunkdLogging)
+{  [Console]::Error.WriteLine(("INFO [{0}:{1}] Get the Event Log Settings" -f $scriptname,$PID))  }
+
 $eventlogSettings = Get-WinEvent -ListLog $logName
 $prov = Get-WinEvent -ListProvider $eventlogSettings.OwningProviderName 
 $logFile = [System.Environment]::ExpandEnvironmentVariables($eventlogSettings.LogFilePath)  # expand the variables in the file path
@@ -36,6 +53,10 @@ $NSPREFIX="evt"
 $nsm = $nsMgr = New-Object -TypeName System.Xml.XmlNamespaceManager(New-Object System.Xml.NameTable)
 $nsm.AddNamespace($NSPREFIX,'http://schemas.microsoft.com/win/2004/08/events')
 $filterQnameNode = "/{0}:template/{0}:data[@name='QNAME']" -f $NSPREFIX
+
+
+if($SplunkdLogging)
+{  [Console]::Error.WriteLine(("INFO [{0}:{1}] Begin processing event log message templates" -f $scriptname,$PID))  }
 
 $prov.Events | %{
     
@@ -61,6 +82,9 @@ $prov.Events | %{
 }
 
 
+if($SplunkdLogging)
+{  [Console]::Error.WriteLine(("INFO [{0}:{1}] Clone and clear the active log" -f $scriptname,$PID))  }
+
 # Clone and clear the active log
 $logSize = $eventlogSettings.Filesize  # before clearing
 $swLogPaused = [Diagnostics.Stopwatch]::StartNew()
@@ -79,6 +103,7 @@ $eventlogSettings.SaveChanges()
 $swLogPaused.Stop()
 
 
+
 # Now process the cloned data
 $ignoredRecs=0
 $swRetrievalTime = [Diagnostics.Stopwatch]::StartNew()
@@ -87,6 +112,9 @@ $query = New-Object System.Diagnostics.Eventing.Reader.EventLogQuery($logBkp,[Sy
 $reader = New-Object System.Diagnostics.Eventing.Reader.EventLogReader($query)   
 $events = New-Object System.Collections.ArrayList
 $logStart = $null
+
+if($SplunkdLogging)
+{  [Console]::Error.WriteLine(("INFO [{0}:{1}] Process the events." -f $scriptname,$PID))  }
 
 while(($record = $reader.ReadEvent()) -ne $null) # Do not use Get-WinEvent to avoid performance overhead of FormatDescription()
 {
@@ -121,8 +149,16 @@ $LoggedTimespanSecs = (New-TimeSpan -Start $logStart -End $logEnd).TotalSeconds
 $swRetrievalTime.Stop()
 $reader.Dispose()
 if($LoggedTimespanSecs -eq $null) { $LoggedTimespanSecs = -1 }
+
+if($SplunkdLogging)
+{  [Console]::Error.WriteLine(("INFO [{0}:{1}] Removing the copy of the log at {2}" -f $scriptname,$PID,$logBkp))  }
+
 Remove-Item -Path $logBkp
 
+
+
+if($SplunkdLogging)
+{  [Console]::Error.WriteLine(("INFO [{0}:{1}] Writing the formatted events to STDOUT" -f $scriptname,$PID,$logBkp))  }
 
 # emit for Splunk UF to parse
 $events | fl 
@@ -130,6 +166,9 @@ $events | fl
 # Performance benchmarking only
 #$events[0] | fl TimeCreated
 #$events[-1] | fl TimeCreated
+
+if($SplunkdLogging)
+{  [Console]::Error.WriteLine(("INFO [{0}:{1}] Writing performance data to STDOUT" -f $scriptname,$PID))  }
 
 # Emit some performance stats
 [pscustomobject]@{
@@ -143,3 +182,5 @@ $events | fl
     ScriptRunSecs=$elapsedTimeSecs = (New-TimeSpan -Start (Get-Process -Id $pid).StartTime  -End (Get-Date)).TotalSeconds  
 }   | fl 
 
+if($SplunkdLogging)
+{  [Console]::Error.WriteLine(("INFO [{0}:{1}] Processing complete. Exiting" -f $scriptname,$PID))  }
