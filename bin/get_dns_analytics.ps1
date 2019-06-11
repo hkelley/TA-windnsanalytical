@@ -1,13 +1,50 @@
 
 param
 (
-      [Parameter(Mandatory = $false)] [switch] $SplunkdLogging
+      [Parameter(Mandatory = $false)] [int] $MaxRuntimeSecs = 55
+    , [Parameter(Mandatory = $false)] [string] $filterXPath = "*[System[EventID=256 or EventID=257 or EventID=261] and EventData[Data[@Name='InterfaceIP']!='127.0.0.1']]"  # trim noise, log only QUERY_RECEIVED or RECURSE_RESPONSE_IN or RESPONSE_SUCCESS
+    , [Parameter(Mandatory = $false)] [switch] $SplunkdLogging
 )
 
 
-$filterXPath = "*[System[EventID!=280] and EventData[Data[@Name='InterfaceIP']!='127.0.0.1']]"
-$logName = 'Microsoft-Windows-DNSServer/Analytical'
+function Start-Watchdog {
+  param(  
+      [Int32]     $WaitSeconds
+    , [ScriptBlock] $Action = {
+            # to splunkd.log
+            [Console]::Error.WriteLine(("INFO [{0}:{1}] Script exceeded maximum runtime of {0}.  Terminating PID {1}" -f $WaitSeconds,$PID))
+
+            # to index
+            [Console]::WriteLine(("INFO [{0}:{1}] Script exceeded maximum runtime of {0}.  Terminating PID {1}" -f $WaitSeconds,$PID))
+            Stop-Process -Id $PID 
+       }
+  )
+  
+  $Wait = "Start-Sleep -seconds $WaitSeconds"
+  $script:Watchdog = [PowerShell]::Create().AddScript($Wait).AddScript($Action)
+  $handle = $Watchdog.BeginInvoke()
+#  Write-Warning "Watchdog will terminate process $PID in $WaitSeconds seconds unless Stop-Watchdog is called."
+}
+
+function Stop-Watchdog {
+  if ( $script:Watchdog -ne $null) {
+    $script:Watchdog.Stop()
+    $script:Watchdog.Runspace.Close()
+    $script:Watchdog.Dispose()
+    Remove-Variable Watchdog -Scope script
+  } else {
+    Write-Warning 'No Watchdog found.'
+  }
+}
+
 $scriptname = Split-Path $MyInvocation.MyCommand.Path -Leaf
+
+Start-Watchdog $MaxRuntimeSecs
+if($SplunkdLogging)
+{  [Console]::Error.WriteLine(("INFO [{0}:{1}] Started a watchdog thread to terminate this script if it does not finish within {2}s." -f $scriptname,$PID,$MaxRuntimeSecs))  }
+
+
+$logName = 'Microsoft-Windows-DNSServer/Analytical'
 
 
 $ignoredZonesStatic = @("microsoft.com","microsoft.com.akadns.net","sophosxl.net")
@@ -42,8 +79,10 @@ if($SplunkdLogging)
 
 $eventlogSettings = Get-WinEvent -ListLog $logName
 $prov = Get-WinEvent -ListProvider $eventlogSettings.OwningProviderName 
-$logFile = [System.Environment]::ExpandEnvironmentVariables($eventlogSettings.LogFilePath)  # expand the variables in the file path
-$logBkp =  Join-Path -Path $env:TEMP  -ChildPath (Split-Path -Path $logFile -Leaf)
+$logFilePath = [System.Environment]::ExpandEnvironmentVariables($eventlogSettings.LogFilePath)  # expand the variables in the file path
+$logFile =  Get-ChildItem $logFilePath
+$logBkpPath =  Join-Path -Path $env:TEMP  -ChildPath  ("{0}-PID{1}{2}" -f $logFile.BaseName,$PID,$logFile.Extension) # Generate a unique file path for this proc using the PID
+   #  (Split-Path -Path $logFilePath -Leaf)
 
 # create sparse arrays to hold mesagetype info.  There are no four-digit event IDs so won't need more than 999 slots
 $messageTypes= new-object pscustomobject[] 999 
@@ -90,7 +129,7 @@ $logSize = $eventlogSettings.Filesize  # before clearing
 $swLogPaused = [Diagnostics.Stopwatch]::StartNew()
 $eventlogSettings.IsEnabled = $false
 $eventlogSettings.SaveChanges()
-Copy-Item $logFile -Destination $logBkp -Force
+Copy-Item $logFilePath -Destination $logBkpPath -Force
 try
 {
     [System.Diagnostics.Eventing.Reader.EventLogSession]::GlobalSession.ClearLog($eventlogSettings.LogName)
@@ -103,11 +142,10 @@ $eventlogSettings.SaveChanges()
 $swLogPaused.Stop()
 
 
-
-# Now process the cloned data
+# Now process the backed-up log data
 $ignoredRecs=0
 $swRetrievalTime = [Diagnostics.Stopwatch]::StartNew()
-$query = New-Object System.Diagnostics.Eventing.Reader.EventLogQuery($logBkp,[System.Diagnostics.Eventing.Reader.PathType]::FilePath , $filterXPath);
+$query = New-Object System.Diagnostics.Eventing.Reader.EventLogQuery($logBkpPath,[System.Diagnostics.Eventing.Reader.PathType]::FilePath , $filterXPath);
 
 $reader = New-Object System.Diagnostics.Eventing.Reader.EventLogReader($query)   
 $events = New-Object System.Collections.ArrayList
@@ -151,14 +189,13 @@ $reader.Dispose()
 if($LoggedTimespanSecs -eq $null) { $LoggedTimespanSecs = -1 }
 
 if($SplunkdLogging)
-{  [Console]::Error.WriteLine(("INFO [{0}:{1}] Removing the copy of the log at {2}" -f $scriptname,$PID,$logBkp))  }
+{  [Console]::Error.WriteLine(("INFO [{0}:{1}] Removing the copy of the log at {2}" -f $scriptname,$PID,$logBkpPath))  }
 
-Remove-Item -Path $logBkp
-
+Remove-Item -Path $logBkpPath
 
 
 if($SplunkdLogging)
-{  [Console]::Error.WriteLine(("INFO [{0}:{1}] Writing the formatted events to STDOUT" -f $scriptname,$PID,$logBkp))  }
+{  [Console]::Error.WriteLine(("INFO [{0}:{1}] Writing the formatted events to STDOUT" -f $scriptname,$PID))  }
 
 # emit for Splunk UF to parse
 $events | fl 
@@ -182,5 +219,7 @@ if($SplunkdLogging)
     ScriptRunSecs=$elapsedTimeSecs = (New-TimeSpan -Start (Get-Process -Id $pid).StartTime  -End (Get-Date)).TotalSeconds  
 }   | fl 
 
+Stop-Watchdog
+
 if($SplunkdLogging)
-{  [Console]::Error.WriteLine(("INFO [{0}:{1}] Processing complete. Exiting" -f $scriptname,$PID))  }
+{  [Console]::Error.WriteLine(("INFO [{0}:{1}] Log processing complete and watchdog stopped. Exiting" -f $scriptname,$PID))  }

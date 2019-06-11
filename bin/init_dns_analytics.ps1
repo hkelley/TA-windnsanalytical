@@ -5,6 +5,7 @@ param
     , [Parameter(Mandatory = $false)] [switch] $bounce
 )
 
+
 $eventlogSettings = Get-WinEvent -ListLog 'Microsoft-Windows-DNSServer/Analytical'  -ComputerName $computername
 
 # Disable and re-enable the log to clear it
@@ -25,10 +26,13 @@ if($bounce)
         Get-Service -Name "SplunkForwarder" -ErrorAction SilentlyContinue | Stop-Service
 		
 		# Clean up any stranded scripted input processes
-		Get-WmiObject Win32_Process -Filter "name = 'powershell.exe' AND CommandLine LIKE '%\etc\apps\%\bin\get_dns_analytics.ps1%'"  | %{Write-Host ("Terminating existing instance {0}" -f $_.ProcessID);  $_.Terminate();}
+		Get-WmiObject  -Class Win32_Process -Filter "name = 'powershell.exe' AND CommandLine LIKE '%\\etc\\apps\\%\\bin\\get_dns_analytics.ps1%'"  | %{Write-Host ("Terminating existing instance {0}" -f $_.ProcessID);  $_.Terminate();}
 		
         Get-Service -Name "SplunkForwarder" -ErrorAction SilentlyContinue | Start-Service
+        
         Get-Service -Name "SplunkForwarder" -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 5
+        Get-WmiObject  -Class Win32_Process -Filter "name = 'powershell.exe' AND CommandLine LIKE '%\\etc\\apps\\%\\bin\\get_dns_analytics.ps1%'"  | Select-Object ProcessID,CommandLine
     }
 }
 
